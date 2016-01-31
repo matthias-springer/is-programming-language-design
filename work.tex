@@ -1,0 +1,322 @@
+\documentclass[12pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{graphicx}
+\usepackage{algorithm2e}% http://ctan.org/pkg/algorithms
+\usepackage{algpseudocode}% http://ctan.org/pkg/algorithmicx
+\usepackage{framed} % or, "mdframed"
+\usepackage[framed]{ntheorem}
+\usepackage{tabularx}
+\newframedtheorem{frm-thm}{Lemma}
+\usepackage[rgb,dvipsnames]{xcolor}
+\usepackage{listings}
+\usepackage{tgcursor}
+\usepackage[scaled=.8]{beramono}
+\usepackage{textcomp}
+\lstset{
+% backgroundcolor=\color[rgb]{0.95, 0.95, 0.95},
+tabsize=2,
+rulecolor=,
+basicstyle=\ttfamily,
+upquote=true,
+% aboveskip={1.5\baselineskip},
+columns=fullflexible,
+% columns=fixed,
+showstringspaces=false,
+extendedchars=true,
+breaklines=true,
+prebreak = \raisebox{0ex}[0ex][0ex]{\ensuremath{\hookleftarrow}},
+% frame=single,
+showtabs=false,
+showspaces=false,
+showstringspaces=false,
+% identifierstyle=\ttfamily,
+keywordstyle=\color[rgb]{1.0,0,0},
+keywordstyle=[1]\color[rgb]{0,0,0.75},
+keywordstyle=[2]\color[rgb]{0.5,0.0,0.0},
+keywordstyle=[3]\color[rgb]{0.127,0.427,0.514},
+keywordstyle=[4]\color[rgb]{0.4,0.4,0.4},
+commentstyle=\color[rgb]{0,0,0},
+stringstyle=\color[rgb]{0.639,0.082,0.082},
+morekeywords={self, proceed},
+numbers=left,%
+numbersep=5pt,%
+numberstyle=\tiny\color{gray},%
+emphstyle=\bfseries,%
+breaklines=true,
+breakatwhitespace=true,%
+escapechar=`,
+}
+
+
+\lstset{escapeinside={<@}{@>}}
+
+\usepackage[scale=1.0, left=1.0cm, right=1.0cm, top=1.865cm, bottom=0.865cm]{geometry}
+\DeclareMathOperator*{\argmin}{arg\,min}
+\DeclareMathOperator{\spn}{span}
+
+\pagestyle{myheadings}
+\markright{Programming Language Design \hfill Matthias Springer, 15D54036\hfill}
+
+\begin{document}
+\begin{abstract}
+In this work, we present examples for metaprogramming using \texttt{thisContext} and mixins and their implementation in Squeak/Pharo, both of which are dialects of Smalltalk.
+\end{abstract}
+
+\section{Reflection and Metaprogramming in Smalltalk}
+Metaprogramming is a program's ability to reason about itself. In an abstract sense, this means that programs can be treated as ordinary data and, therefore, be analyzed and changed at runtime. In this section, we show an example for Smalltalk's \texttt{thisContext}, which is a mechanism to control the bytecode interpreter.
+
+\subsection{Stack Machine Model}
+Smalltalk source code is compiled to bytecode by a compiler written in Smalltalk itself. The bytecode is then executed by a virtual machine. Smalltalk's bytecode follows the stack machine model. When a message send should be performed, the compiler generates bytecode that pushes the receiver and all arguments onto the stack, followed by a \texttt{send:} instruction with the selector. 
+
+\subsection{Accessing Stack Frames}
+Smalltalk provides a special keyword \texttt{thisContext} evaluating to an object representing the current stack frame. That object has methods for accessing and modifying stack variables (e.g., local variables), modifying the program counter and jumping to an arbitrary address within the executing method, and accessing the sender's stack frame. \texttt{thisContext} is an instance of class \texttt{MethodContext} which lets programmers effectively control the bytecode interpreter within the guest language. The compiler translates \texttt{thisContext} to a bytecode instruction that generates an instance of \texttt{MethodContext} and pushes it onto the stack.
+
+\paragraph{Protocol}
+The following list gives an overview of some interesting methods provided by \texttt{MethodContext}\footnote{Some methods are stored in a superclass of \texttt{MethodContext}, but we only mention \texttt{MethodContext} in this work.}.
+\begin{itemize}
+    \item \texttt{jump:}: Modifies the program counter to perform a relative jump in the bytecode of the current method.
+    \item \texttt{method}: Returns the \texttt{CompiledMethod} object of the executing method. This object contains meta information about the method and its bytecode.
+    \item \texttt{tempAt:}: Accesses a temporary variable of this stack frame using its index.
+    \item \texttt{tempAt:put:}: Sets a temporary variable of this stack frame using its index.
+    \item \texttt{pc}: Returns the current program counter, an index into the bytecode of the method of this stack frame.
+    \item \texttt{pc:}: Sets the current program counter.
+    \item \texttt{push:}: Pushes a value onto the stack, effectively increasing the size of this stack frame.
+    \item \texttt{receiver}: Returns the receiver of this stack frame.
+    \item \texttt{return:}: Causes the current stack frame to return with a certain value.
+    \item \texttt{sender}: Returns the stack frame below this frame.
+    \item \texttt{swapReceiver:}: Sets the receiver of this stack frame.
+\end{itemize}
+
+\paragraph{Optimizations}
+In the presence of a just-in-time compiler, a virtual machine might never generate a \texttt{MethodContext} object unless the programmer uses \texttt{thisContext}. Some of the methods shown below first try to use a primitive in the virtual machine (for performance reasons) and execute the shown code only as a fallback, in case the virtual machine does not provide an implementation for the primitive. Nevertheless, the programmer can change these methods at any time to force that the Smalltalk code is executed instead of the implementation in the virtual machine.
+
+\subsection{Example: Exceptions Implemented in the Guest Language}
+The mechanism for traversing the method stack and controlling the bytecode interpreter can be used to implement exception handling in the guest language, such that the underlying virtual machine does not have to be aware of that mechanism. The benefit of this implementation approach is that more functionality can be implemented in high-level Smalltalk code, resulting in a \emph{smaller} virtual machine. This is not only a \emph{cleaner} approch with respect to architectural design\footnote{In the best case, we would like to have all functionality implemented in the guest language itself.}, but also us to use the guest language as a playground for new language features, since it is no longer necessary to recompile the virtual machine or to even restart the running Smalltalk system for a language modification to take effect.
+
+\paragraph{Exception Handling}
+Exceptions are raised in Smalltalk by sending the message \texttt{signal} to an exception object. An exception is caught by the first exception handler contained in a stack frame. The message \texttt{on:do:} can be sent to a block closure containing the code throwing an exception with the type of exception and an exception handler block as arguments.
+
+\begin{lstlisting}
+<@\textbf{HttpRequest>>titechWebsiteContent}@>
+    [ <@$\uparrow$@> <@\textcolor{Blue}{self}@> httpGet: <@\textcolor{Purple}{'http://www.titech.ac.jp/'}@> ] 
+        on: Exception
+        do: [ <@\textcolor{Gray}{:e}@> | <@$\uparrow$@> <@\textcolor{Purple}{'<b>Unable to send HTTP GET request'}@> ]
+
+<@\textbf{HttpRequest>>httpGet:}@> <@\textcolor{Gray}{aURL}@>
+    <@\textcolor{Purple}{\textit{"..."}}@>
+    <@\textcolor{Gray}{timedOut}@> ifTrue: [ Exception new signal ].
+    <@\textcolor{Purple}{\textit{"..."}}@>
+\end{lstlisting}
+
+If we run the execute \texttt{titechWebsiteContent} in the previous code snippet and the network host cannot be reached, \texttt{httpGet:} will signal (throw) an exception which will be handled by the exception handler block in the first method.
+
+\paragraph{Implementation of Exception Handling}
+This paragraph describes the implementation of exception handling in Squeak/Smalltalk using \texttt{thisContext}. The following source code snippets are taken from a Squeak 5.0 image and simplified. A number of subtle details are omitted such as checking if an exception handler should handle a certain type of exception.
+
+The method \texttt{Exception>>signal} uses the method \texttt{nestHandlerContext} to find a stack frame with an exception handler. To detect such a stack frame, the method \texttt{on:do:} starts with a primitive call. That primitive is not implemented in the virtual machine, i.e., when that method is executed, the primitive fails immediately and the code after the primitive statement is executed. The primitive only acts as a method marker (annotation). Note that in method \texttt{signal} the keyword \texttt{thisContext} refers to the stack frame executing the \texttt{signal} method. There is stack frame for calling that method on the stack below that frame, and we assume that there is also a stack frame containing an exception handler somewhere below that frame.
+
+\begin{lstlisting}
+<@\textbf{Exception>>signal}@>
+    <@\textcolor{Purple}{\textit{"Ask ContextHandlers in the sender chain to handle this signal.  The default is to execute and return my defaultAction."}}@>
+    <@$\uparrow$@> <@\textcolor{Blue}{thisContext}@> nextHandlerContext handleSignal: <@\textcolor{Blue}{self}@>
+    
+<@\textbf{BlockClosure>>on:}@> <@\textcolor{Gray}{exception}@> <@\textbf{do:}@> <@\textcolor{Gray}{handlerAction}@>
+    <@\textcolor{Purple}{\textit{"Evaluate the receiver in the scope of an exception handler."}}@>
+    <@\textcolor{OliveGreen}{\textbf{<primitive: 199>}}@>  <@\textcolor{Purple}{\textit{"just a marker, fail and execute the following"}}@>
+    <@$\uparrow$@> <@\textcolor{Blue}{self}@> value
+\end{lstlisting}
+
+The method \texttt{nextHandlerContext} finds the next stack frame containing an exception handler by iterating through all stack frames until one stack frame is marked, i.e., it contains a primitive call with number 199. A different approach could check if the method of a stack frame is the compiled method object \texttt{BlockClosure>>on:do:}, but checking the primitive number might be more efficient.
+
+\begin{lstlisting}
+<@\textbf{MethodContext>>nextHandlerContext}@>
+    <@\textcolor{Purple}{\textit{"Return the next handler marked context, returning nil if there is none.  Search starts with self and proceeds up to nil."}}@>
+    <@\textcolor{Gray}{| ctx |}@>
+    <@\textcolor{Gray}{ctx}@> := <@\textcolor{Blue}{self}@>.
+        [ <@\textcolor{Gray}{ctx}@> isHandlerContext ifTrue:[ <@$\uparrow$@> <@\textcolor{Gray}{ctx}@> ].
+        (<@\textcolor{Gray}{ctx}@> := <@\textcolor{Gray}{ctx}@> sender) == <@\textcolor{Blue}{nil}@> ] whileFalse.
+    <@$\uparrow$@> <@\textcolor{Blue}{nil}@>
+    
+<@\textbf{MethodContext>>isHandlerContext}@>
+    <@\textcolor{Purple}{\textit{"Is this a context for a method that is marked?"}}@>
+    <@$\uparrow$@> method primitive = 199
+\end{lstlisting}
+
+Once a stack frame handling exceptions was found, the handler must be executed and the method containing the handler must return. Notice that the \texttt{return:} message send in the following source code snippet is not a regular method return statement but a method defined on class \texttt{MethodContext}. It causes that method to return with a certain result, regardless of where the program counter points to. This automatically terminates all stack frames on top of that frame. The method \texttt{tempAt:} is used to retrieve the second temporary variable, which is the second argument to \texttt{on:do:} (exception handler block). The method \texttt{cull:} tries to execute the exception handler block with the exception object as argument or without any arguments in case the block does not take any arguments.
+
+\begin{lstlisting}
+<@\textbf{MethodContext>>handleSignal:}@> <@\textcolor{Gray}{exception}@>
+    <@\textcolor{Blue}{self}@> return: ((<@\textcolor{Blue}{self}@> tempAt: 2) cull: <@\textcolor{Gray}{exception}@>)
+\end{lstlisting}
+
+\paragraph{Implementation without Metaprogramming}
+Exception handling is typically implemented in the virtual machine/interpreter. Stack frames can be marked as exception handlers by setting a flag similarly to the primitive call in the example above. Raising an exception translates to a primitive call or a special bytecode instruction, upon which the virtual machine traverses the stack of method frames until it finds one that is marked. This mechanism is very similar to the mechanism described above. Smalltalk is special in a sense that stack frames are guest language object and accessible and modifyable in the guest language.
+
+It is not obvious how to implement exception handling in the guest language without using metaprogramming. One very tedious approach would have every method return a tuple of the actual return value and an optional exception object. As soon as a method call returns, the sender first checks if the tuple contains an exception object and, if so, returns immediately with that exception object as well. Otherwise, it proceeds with proceeds with the execution, possibly using the actual return value of the called method. This mechanism requires modifying every return statement and every method call, but it might be possible to do this transformation automatically using macros.
+
+
+\section{Mixins in Smalltalk}
+A mixin is an abstract subclass that can be applied to multiple (super)classes. Mixins are typically used to share methods that are common to multiple classes, such that the source code does not have to be duplicated. Most Smalltalk dialects do not support mixins out of the box\footnote{Newspeak is similar to Smalltalk and supports Mixins.}, but it is easy to implement rudimentary mixin functionality in Squeak. The last part of this section describes how to do that.
+
+\subsection{Protocol}
+Classes are defined in Squeak using a message send to the superclass. The following snippet defines a subclass of \texttt{Object}.
+\begin{lstlisting}
+Object subclass: <@\textcolor{Purple}{\#NewClass}@>
+    instanceVariableNames: <@\textcolor{Purple}{'foo bar'}@>
+    classVariableNames: <@\textcolor{Purple}{'qux'}@>
+\end{lstlisting}
+
+The following listing shows how to apply three mixins during class definition. A mixin is an ordinary class but not meant to be instantiated.
+\begin{lstlisting}
+Object subclass: <@\textcolor{Purple}{\#NewClass}@>
+    instanceVariableNames: <@\textcolor{Purple}{'foo bar'}@>
+    classVariableNames: <@\textcolor{Purple}{'qux'}@>
+    mixins: { Mixin1. Mixin2. Mixin3 }
+\end{lstlisting}
+
+\subsection{Example: \texttt{Comparable} Mixin}
+In this example, we assume that an application needs two classes \texttt{Time} and \texttt{Money}. Since our application should be deployed in an international environment, class \texttt{Time} must be aware of time zones and class \texttt{Money} should support multiple currencies. For that reason, we do not want to use temporal and numeric classes provided by the execution environment.
+
+The following listing shows how these two classes are defined.
+\begin{lstlisting}
+Object subclass: <@\textcolor{Purple}{\#Time}@>
+    instanceVariableNames: <@\textcolor{Purple}{'hour minute second timeZone'}@>
+    classVariableNames: <@\textcolor{Purple}{''}@>.
+    
+Object subclass: <@\textcolor{Purple}{\#Money}@>
+    instanceVariableNames: <@\textcolor{Purple}{'amount currency'}@>
+    classVariableNames: <@\textcolor{Purple}{''}@>.
+\end{lstlisting}
+
+A frequent operation in our application involves comparing instances of \texttt{Time} and instances of \texttt{Money}. Therefore, both classes should understand the methods \texttt{<}, \texttt{<=}, \texttt{>}, \texttt{>=}, \texttt{=}, and \texttt{~} (inequality). We first present an implementation without mixins and then an implementation with mixins.
+
+\paragraph{Without Mixins}
+The following source code snippest shows how to implement \texttt{Time} without mixins. \texttt{Time} has a method \texttt{gmtTime} which returns the time in seconds according to the GMT time zone. Methods for comparing two \texttt{Time} instances compare this value.
+\begin{lstlisting}
+<@\textbf{Time>>gmtTime}@>
+    <@$\uparrow$@> (self hour * 3600 + self minute * 60 + self second - self timeZone gmtDifference * 3600) \\ 86400
+
+<@\textbf{Time>>{<}} \textcolor{Gray}{other}@>
+    <@$\uparrow$@> self gmtTime < <@\textcolor{Gray}{other}@> gmtTime
+
+<@\textbf{Time>>{<=}} \textcolor{Gray}{other}@>
+    <@$\uparrow$@> self gmtTime <= <@\textcolor{Gray}{other}@> gmtTime
+    
+<@\textbf{Time>>{>}} \textcolor{Gray}{other}@>
+    <@$\uparrow$@> self gmtTime > <@\textcolor{Gray}{other}@> gmtTime
+    
+<@\textbf{Time>>{>=}} \textcolor{Gray}{other}@>
+    <@$\uparrow$@> self gmtTime >= <@\textcolor{Gray}{other}@> gmtTime
+    
+<@\textbf{Time>>{=}} \textcolor{Gray}{other}@>
+    <@$\uparrow$@> self gmtTime = <@\textcolor{Gray}{other}@> gmtTime
+    
+<@\textbf{Time>>$\sim$} \textcolor{Gray}{other}@>
+    <@$\uparrow$@> self gmtTime ~ <@\textcolor{Gray}{other}@> gmtTime
+\end{lstlisting}
+
+The following source code snippest shows how to implement \texttt{Money} without mixins. \texttt{Money} has a method \texttt{toUSD} which returns the amount in US dollars according to current exchange rate. Methods for comparing two \texttt{Money} instances compare this value. Note that methods for comparing instances are similar in \texttt{Time} and \texttt{Money}. In the next paragraph, we will get rid of this code duplication using mixins.
+\begin{lstlisting}
+<@\textbf{Money>>toUSD}@>
+    <@$\uparrow$@> self amount * (WebRequest queryRate: self currency to: <@\textcolor{Purple}{'USD'}@>).
+
+<@\textbf{Money>>{<}} \textcolor{Gray}{other}@>
+    <@$\uparrow$@> self toUSD < <@\textcolor{Gray}{other}@> toUSD
+
+<@\textbf{Money>>{<=}} \textcolor{Gray}{other}@>
+    <@$\uparrow$@> self toUSD <= <@\textcolor{Gray}{other}@> toUSD
+    
+<@\textbf{Money>>{>}} \textcolor{Gray}{other}@>
+    <@$\uparrow$@> self toUSD > <@\textcolor{Gray}{other}@> toUSD
+    
+<@\textbf{Money>>{>=}} \textcolor{Gray}{other}@>
+    <@$\uparrow$@> self toUSD >= <@\textcolor{Gray}{other}@> toUSD
+    
+<@\textbf{Money>>{=}} \textcolor{Gray}{other}@>
+    <@$\uparrow$@> self toUSD = <@\textcolor{Gray}{other}@> toUSD
+    
+<@\textbf{Money>>$\sim$} \textcolor{Gray}{other}@>
+    <@$\uparrow$@> self toUSD ~ <@\textcolor{Gray}{other}@> toUSD
+\end{lstlisting}
+
+\paragraph{With Mixins}
+We first define a mixin \texttt{Comparable} providing methods for comparing instances of any kind of class, given that the class provides implementations for \texttt{=} and \texttt{>}. Based on these two methods, the remaining for methods can be implemented as follows.
+\begin{lstlisting}
+Object subclass: <@\textcolor{Purple}{\#Comparable}@>
+    instanceVariableNames: <@\textcolor{Purple}{''}@>
+    classVariableNames: <@\textcolor{Purple}{''}@>.
+    
+<@\textbf{Comparable>>{=}} \textcolor{Gray}{other}@>
+    self subclassResponsibility.
+    
+<@\textbf{Comparable>>{>}} \textcolor{Gray}{other}@>
+    self subclassResponsibility.
+    
+<@\textbf{Comparable>>{<}} \textcolor{Gray}{other}@>
+    <@$\uparrow$@> (self = <@\textcolor{Gray}{other}@> | (self > <@\textcolor{Gray}{other}@>)) not
+    
+<@\textbf{Comparable>>{<=}} \textcolor{Gray}{other}@>
+    <@$\uparrow$@> (self > <@\textcolor{Gray}{other}@>) not
+    
+<@\textbf{Comparable>>{>=}} \textcolor{Gray}{other}@>
+    <@$\uparrow$@> self = <@\textcolor{Gray}{other}@> | (self > <@\textcolor{Gray}{other}@>)
+    
+<@\textbf{Comparable>>$\sim$} \textcolor{Gray}{other}@>
+    <@$\uparrow$@> (self = <@\textcolor{Gray}{other}@>) not
+\end{lstlisting}
+
+We now define \texttt{Time} and \texttt{Money} as subclasses of \texttt{Object} with the mixin \texttt{Comparable}. This means that these classes are subclasses of a mixin application of \texttt{Comparable}, which is a subclass of \texttt{Object}. Notice that we only have to implement the methods \texttt{>} and \texttt{=} along with the converter methods \texttt{toUSD} and \texttt{gmtTime}, removing the code duplication partly.
+\begin{lstlisting}
+Object subclass: <@\textcolor{Purple}{\#Time}@>
+    instanceVariableNames: <@\textcolor{Purple}{'hour minute second timeZone'}@>
+    classVariableNames: <@\textcolor{Purple}{''}@>
+    mixins: { Comparable }.
+    
+Object subclass: <@\textcolor{Purple}{\#Money}@>
+    instanceVariableNames: <@\textcolor{Purple}{'amount currency'}@>
+    classVariableNames: <@\textcolor{Purple}{''}@>
+    mixins: { Comparable }.
+    
+<@\textbf{Time>>{>}} \textcolor{Gray}{other}@>
+    <@$\uparrow$@> self gmtTime > <@\textcolor{Gray}{other}@> gmtTime
+
+<@\textbf{Time>>{=}} \textcolor{Gray}{other}@>
+    <@$\uparrow$@> self gmtTime = <@\textcolor{Gray}{other}@> gmtTime
+    
+<@\textbf{Money>>{>}} \textcolor{Gray}{other}@>
+    <@$\uparrow$@> self toUSD > <@\textcolor{Gray}{other}@> toUSD
+    
+<@\textbf{Money>>{=}} \textcolor{Gray}{other}@>
+    <@$\uparrow$@> self toUSD = <@\textcolor{Gray}{other}@> toUSD
+\end{lstlisting}
+
+\subsection{Implementation of Mixins}
+The following listing describes how mixins can be implemented in Squeak using metaprogramming. We provide a new method that takes an additional collection of mixins during subclassing. For every mixin, the algorithm generates a new subclass with the instance/class variables of the mixin and adds the methods of the mixin to that subclass. This is possible because Smalltalk allows generating new classes and adding new methods from source code while a program is running. Class-side methods and instance variables are added to the meta class object, which can be obtained by sending the message \texttt{class} to the class object\footnote{For that reason we write \texttt{Classname class>>methodName} to denote class-side methods.}.
+
+\begin{lstlisting}
+<@\textbf{Class class>>subclass:} \textcolor{Gray}{name} \textbf{instanceVariableNames:} \textcolor{Gray}{instVarNames} \textbf{classVariableNames:} \textcolor{Gray}{classVars} \textbf{mixins:} \textcolor{Gray}{mixinClasses}@>
+    <@\textcolor{Gray}{| result |}@>
+    <@\textcolor{Gray}{result}@> := self 
+    <@\textcolor{Gray}{mixinClasses}@> withIndexDo: [ <@\textcolor{Gray}{:cls :idx}@> |
+        <@\textcolor{Gray}{result}@> := <@\textcolor{Gray}{result}@> subclass: <@\textcolor{Gray}{name}@>, <@\textcolor{Purple}{'\_'}@>, <@\textcolor{Gray}{idx}@> asString
+            instanceVariableNames: <@\textcolor{Gray}{cls}@> instVarNames
+            classVariableNames: <@\textcolor{Gray}{cls}@> classVarNames.
+        <@\textcolor{Gray}{cls}@> methodDict do: [ <@\textcolor{Gray}{:sel :meth}@> | <@\textcolor{Gray}{result}@> compile: <@\textcolor{Gray}{meth}@> getSource ].
+        <@\textcolor{Gray}{cls}@> class methodDict do: [ <@\textcolor{Gray}{:sel :meth}@> | <@\textcolor{Gray}{result}@> class compile: <@\textcolor{Gray}{meth}@> getSource ] ].
+    <@$\uparrow$@> <@\textcolor{Gray}{result}@> subclass: <@\textcolor{Gray}{name}@>
+        instanceVariableNames: <@\textcolor{Gray}{instVarNames}@>
+        classVariableNames: <@\textcolor{Gray}{classVars}@>
+\end{lstlisting}
+
+%\subsection{Class Model}
+%In Smalltalk, everything is an object, even primitive values like integers or strings. Every object is an instance of a class, whose superclass hierarchy starts with \texttt{Object}. Every class is an object and an instance of its \emph{meta class}. A meta class defines methods and variables for the class objects (similar to \emph{static} members in Java). Every meta class is an instance of the class \texttt{Metaclass}. Consequently, Smalltalk's instance-of chain ends with the first meta class and recurses in a circle of \texttt{Metaclass} $\rightarrow$ \texttt{Metaclass class} $\rightarrow$ \texttt{Metaclass}. This is different from Ruby, where even meta classes (\emph{singleton classes}) can have their own meta class, i.e., \emph{meta meta class} in Smalltalk speech.
+
+%\subsection{Reflection}
+%Every object in Smalltalk is an instance of a class that inherits from \texttt{Object}. This class defines methods for accessing 
+
+
+% explain thisContext, use case: 
+\end{document}
